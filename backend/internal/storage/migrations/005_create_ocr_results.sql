@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS ocr_results (
+    id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+);

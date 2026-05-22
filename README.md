@@ -4,12 +4,12 @@ A production-grade desktop AI assistant built with **Go + Wails + React** for ed
 
 ## Features
 
-- **Standalone Desktop App** - No browser needed, runs natively on Windows/Mac/Linux
-- **Gemini AI Integration** - Uses Google Gemini API for AI chat
-- **Dark Theme UI** - Modern, sleek interface
-- **Settings Panel** - Enter your own API key
-- **Session History** - Chat history saved locally
-- **Always On Top** - Keeps window visible while working
+- **Standalone Desktop App** - Native Windows/Mac/Linux application
+- **Multiple AI Providers** - Gemini API, Ollama (local), OpenAI, Groq
+- **SQLite Database** - Sessions and messages stored locally
+- **Settings Panel** - Enter your API key and configure providers
+- **Dark Theme UI** - Modern purple gradient interface
+- **Session History** - Chat history persisted in SQLite
 
 ## 🚀 Quick Start
 
@@ -17,33 +17,31 @@ A production-grade desktop AI assistant built with **Go + Wails + React** for ed
 
 1. **Go 1.21+** - [Download](https://go.dev/dl/)
 2. **Node.js 18+** - [Download](https://nodejs.org/)
-3. **Wails CLI** - Install via: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
+3. **Wails CLI** - `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 
-### Setup Steps
+### Setup
 
 ```bash
-# 1. Clone the repository
+# Clone and enter project
 git clone https://github.com/manish-npx/cdgo.git
 cd cdgo/ai-desktop-assistant
 
-# 2. Install frontend dependencies
+# Install frontend
 cd frontend
 npm install
-
-# 3. Build frontend
 npm run build
 
-# 4. Go back and run with Wails
+# Run with Wails
 cd ..
 wails dev
 ```
 
 ### First Run
 
-1. The app opens with a **Settings panel**
-2. Enter your **Gemini API key** (get free from [aistudio.google.com](https://aistudio.google.com/app/apikey))
-3. Select your preferred **AI model**
-4. Click **Save Settings**
+1. Click the **⚙️ Settings** button
+2. Enter your **API key** (get free from [aistudio.google.com](https://aistudio.google.com/app/apikey))
+3. Select **AI Provider** (Gemini recommended)
+4. Click **Save**
 5. Start chatting!
 
 ## 📁 Project Structure
@@ -51,96 +49,73 @@ wails dev
 ```
 ai-desktop-assistant/
 ├── backend/                    # Go + Wails backend
-│   ├── cmd/main.go            # Wails app entry
+│   ├── cmd/main.go            # Application entry
 │   └── internal/
 │       ├── config/            # Configuration management
-│       ├── handlers/          # Wails IPC handlers
-│       └── services/
-│           ├── ai/           # Gemini AI service
-│           └── storage/      # Session storage
-├── frontend/                   # React frontend
-│   ├── src/
-│   │   ├── App.tsx           # Main React component
-│   │   └── main.tsx          # Entry point
-│   └── package.json
+│       ├── services/ai/       # AI provider integration
+│       └── storage/          # SQLite + repositories
+│           └── migrations/   # Database migrations
+├── frontend/                   # React UI
+│   └── src/
+│       └── App.tsx           # Main application
 └── README.md
 ```
 
-## 🔑 Getting Gemini API Key
+## 🔧 Configuration
 
-1. Go to [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
-2. Click "Create API Key"
-3. Copy the key
-4. Paste it in the app's Settings panel
+Settings stored at: `~/.ai-desktop-assistant/config.json`
 
-**Free Tier Available:**
-- Gemini 2.0 Flash: 15 requests/min
-- Gemini 1.5 Flash: 15 requests/min
-- Gemini 1.5 Pro: Paid
+### Environment Variables
 
-## 🎯 How It Works
+```bash
+# AI Provider
+AI_PROVIDER=gemini              # gemini, ollama, openai, groq
+GEMINI_API_KEY=your-key
+GEMINI_MODEL=gemini-2.0-flash
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=qwen2.5-coder
 
-```
-┌──────────────────────────┐
-│     Desktop Window        │
-│  ┌────────────────────┐  │
-│  │   React UI         │  │
-│  │   (TypeScript)     │  │
-│  └────────┬───────────┘  │
-│           │ Wails IPC     │
-│  ┌────────▼───────────┐  │
-│  │   Go Backend        │  │
-│  │   - AI Service      │  │
-│  │   - Storage         │  │
-│  │   - Config          │  │
-│  └────────┬───────────┘  │
-│           │              │
-│  ┌────────▼───────────┐  │
-│  │   Gemini API        │  │
-│  │   (Your API Key)    │  │
-│  └────────────────────┘  │
-└──────────────────────────┘
+# Database
+DATABASE_PATH=./data/app.db
+
+# Server
+SERVER_HOST=localhost
+SERVER_PORT=8080
 ```
 
-## ⚙️ Configuration
+## 🎯 Supported AI Providers
 
-Settings are stored at:
-- **Windows:** `C:\Users\<You>\.ai-desktop-assistant\config.json`
-- **Linux/Mac:** `~/.ai-desktop-assistant/config.json`
-
-## 🛠️ Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| Desktop Framework | Wails v2 |
-| Backend | Go |
-| Frontend | React 18 + TypeScript |
-| State | React hooks |
-| AI | Google Gemini API |
+| Provider | API Key Required | Local |
+|----------|------------------|-------|
+| **Gemini** | ✅ Free tier | ❌ |
+| **Ollama** | ❌ | ✅ |
+| **OpenAI** | ✅ Paid | ❌ |
+| **Groq** | ✅ Free tier | ❌ |
 
 ## 📚 Educational Purpose
 
 This project demonstrates:
 - Go systems programming
 - Wails desktop development
-- React frontend integration
 - Clean architecture patterns
-- API integration patterns
-- Desktop app deployment
+- SQLite with migrations
+- AI provider integration
+- Repository pattern
+- Event-driven design
 
 ## 🔧 Development
 
 ```bash
-# Run in dev mode with hot reload
+# Run in dev mode
 wails dev
 
 # Build for production
 wails build
 
-# Run backend only
-go run backend/cmd/main.go
+# Run Go tests
+go test ./...
 ```
 
 ## 📄 License
 
-MIT - For educational purposes.
+MIT - For educational use.

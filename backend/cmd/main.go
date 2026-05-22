@@ -4,153 +4,196 @@ import (
 "context"
 "embed"
 "log"
-"net/http"
-"os"
-"os/signal"
-"syscall"
 
 "ai-desktop-assistant/backend/internal/config"
-"ai-desktop-assistant/backend/internal/handlers"
 "ai-desktop-assistant/backend/internal/services/ai"
-"ai-desktop-assistant/backend/internal/services/storage"
+"ai-desktop-assistant/backend/internal/storage"
 
 "github.com/wailsapp/wails/v2"
 "github.com/wailsapp/wails/v2/pkg/options"
 "github.com/wailsapp/wails/v2/pkg/options/assetserver"
 "github.com/wailsapp/wails/v2/pkg/options/windows"
+"go.uber.org/zap"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// App is the main application struct
 type App struct {
 wails.App
-config        *config.Config
-storageService *storage.StorageService
-aiService     *ai.AIService
-handlers      *handlers.Handlers
+config     *config.Config
+store      *storage.Store
+aiService  *ai.AIService
+logger     *zap.Logger
 }
 
+// NewApp creates a new application instance
 func NewApp() *App {
-app := &App{}
-app.config = config.Load()
-app.storageService = storage.New(app.config.StoragePath)
-app.aiService = ai.NewGeminiService()
-app.handlers = handlers.New(app.storageService, app.aiService, app.config)
-return app
+logger, _ := zap.NewDevelopment()
+defer logger.Sync()
+
+cfg := config.Load()
+
+// Initialize database
+db, err := storage.New(cfg.Database.Path, logger)
+if err != nil {
+logger.Fatal("Failed to initialize database", zap.Error(err))
 }
 
+store := storage.NewStore(db)
+aiService := ai.NewService(cfg)
+
+logger.Info("Application initialized", zap.String("version", cfg.App.Version))
+
+return &App{
+config:    cfg,
+store:     store,
+aiService: aiService,
+logger:   logger,
+}
+}
+
+// startup is called when the application starts
 func (a *App) startup(ctx context.Context) {
-log.Println("AI Desktop Assistant starting...")
-if err := a.storageService.Init(); err != nil {
-log.Printf("Storage error: %v", err)
-}
-log.Println("Application ready")
+a.logger.Info("Application starting...")
 }
 
+// shutdown is called when the application closes
 func (a *App) shutdown(ctx context.Context) {
-log.Println("Shutting down...")
-a.storageService.Close()
+a.logger.Info("Application shutting down...")
 }
 
-// =====================
-// Wails Bindings - API Key Management
-// =====================
+// ====================
+// Wails Bindings - Settings & API Key
+// ====================
 
-func (a *App) GetAPIKey(ctx context.Context) string {
-return a.config.GeminiAPIKey
+// GetSettings returns current application settings
+func (a *App) GetSettings(ctx context.Context) map[string]interface{} {
+// Load from database
+apiKey, _ := a.store.Config.Get("gemini_api_key")
+geminiModel, _ := a.store.Config.Get("gemini_model")
+ollamaHost, _ := a.store.Config.Get("ollama_host")
+ollamaModel, _ := a.store.Config.Get("ollama_model")
+aiProvider, _ := a.store.Config.Get("ai_provider")
+
+if apiKey == "" {
+apiKey = a.config.AI.GeminiAPIKey
+}
+if geminiModel == "" {
+geminiModel = a.config.AI.GeminiModel
+}
+if ollamaHost == "" {
+ollamaHost = a.config.AI.OllamaHost
+}
+if ollamaModel == "" {
+ollamaModel = a.config.AI.OllamaModel
+}
+if aiProvider == "" {
+aiProvider = a.config.AI.Provider
 }
 
-func (a *App) SetAPIKey(ctx context.Context, key string) error {
-a.config.GeminiAPIKey = key
-a.aiService.SetAPIKey(key)
-return a.config.Save()
+return map[string]interface{}{
+"apiKey":      apiKey,
+"geminiModel": geminiModel,
+"ollamaHost":  ollamaHost,
+"ollamaModel": ollamaModel,
+"aiProvider":  aiProvider,
+}
 }
 
-func (a *App) GetAIModel(ctx context.Context) string {
-return a.config.AIModel
+// SaveSettings saves application settings
+func (a *App) SaveSettings(ctx context.Context, settings map[string]interface{}) error {
+if apiKey, ok := settings["apiKey"].(string); ok {
+a.store.Config.Set("gemini_api_key", apiKey)
+a.aiService.SetAPIKey(apiKey)
+}
+if model, ok := settings["geminiModel"].(string); ok {
+a.store.Config.Set("gemini_model", model)
+a.aiService.SetModel(model)
+}
+if provider, ok := settings["aiProvider"].(string); ok {
+a.store.Config.Set("ai_provider", provider)
+a.aiService.SetProvider(provider)
+}
+if host, ok := settings["ollamaHost"].(string); ok {
+a.store.Config.Set("ollama_host", host)
+}
+if model, ok := settings["ollamaModel"].(string); ok {
+a.store.Config.Set("ollama_model", model)
+}
+return nil
 }
 
-func (a *App) SetAIModel(ctx context.Context, model string) error {
-a.config.AIModel = model
-return a.config.Save()
-}
-
-// =====================
+// ====================
 // Wails Bindings - AI Chat
-// =====================
+// ====================
 
+// SendMessage sends a message to the AI and returns the response
 func (a *App) SendMessage(ctx context.Context, message string) (string, error) {
-if a.config.GeminiAPIKey == "" {
+apiKey, _ := a.store.Config.Get("gemini_api_key")
+if apiKey == "" {
 return "", nil
 }
+a.aiService.SetAPIKey(apiKey)
 return a.aiService.Chat(ctx, message)
 }
 
+// GetChatHistory returns chat history for a session
 func (a *App) GetChatHistory(ctx context.Context) []map[string]interface{} {
-return a.storageService.GetSessions()
+sessions, _ := a.store.Session.GetAll()
+result := make([]map[string]interface{}, len(sessions))
+for i, s := range sessions {
+result[i] = map[string]interface{}{
+"id":    s.ID,
+"title": s.Title,
+"date":  s.CreatedAt.Format("2006-01-02"),
+}
+}
+return result
 }
 
-// =====================
-// Wails Bindings - Settings
-// =====================
-
-func (a *App) GetSettings(ctx context.Context) map[string]interface{} {
-return map[string]interface{}{
-"apiKey":       a.config.GeminiAPIKey,
-"aiModel":      a.config.AIModel,
-"overlayWidth": a.config.OverlayWidth,
-"overlayHeight":a.config.OverlayHeight,
-"alwaysOnTop":  a.config.AlwaysOnTop,
-"darkMode":     a.config.DarkMode,
+// CreateSession creates a new chat session
+func (a *App) CreateSession(ctx context.Context) (string, error) {
+session, err := a.store.Session.Create("New Chat")
+if err != nil {
+return "", err
 }
+return session.ID, nil
 }
 
-func (a *App) SaveSettings(ctx context.Context, settings map[string]interface{}) error {
-if key, ok := settings["apiKey"].(string); ok {
-a.config.GeminiAPIKey = key
-a.aiService.SetAPIKey(key)
+// GetMessages returns messages for a session
+func (a *App) GetMessages(ctx context.Context, sessionID string) []map[string]interface{} {
+messages, _ := a.store.Message.GetBySession(sessionID)
+result := make([]map[string]interface{}, len(messages))
+for i, m := range messages {
+result[i] = map[string]interface{}{
+"id":    m.ID,
+"role":  m.Role,
+"text":  m.Content,
+"date":  m.CreatedAt.Format("15:04"),
 }
-if model, ok := settings["aiModel"].(string); ok {
-a.config.AIModel = model
 }
-if w, ok := settings["overlayWidth"].(float64); ok {
-a.config.OverlayWidth = int(w)
-}
-if h, ok := settings["overlayHeight"].(float64); ok {
-a.config.OverlayHeight = int(h)
-}
-if top, ok := settings["alwaysOnTop"].(bool); ok {
-a.config.AlwaysOnTop = top
-}
-if dark, ok := settings["darkMode"].(bool); ok {
-a.config.DarkMode = dark
-}
-return a.config.Save()
+return result
 }
 
-// =====================
-// Wails Bindings - Overlay
-// =====================
-
-func (a *App) SetOverlaySize(ctx context.Context, width, height int) {
-a.config.OverlayWidth = width
-a.config.OverlayHeight = height
-a.config.Save()
+// SaveMessage saves a message to the database
+func (a *App) SaveMessage(ctx context.Context, sessionID, role, content string) error {
+_, err := a.store.Message.Create(sessionID, role, content)
+return err
 }
 
-func (a *App) SetAlwaysOnTop(ctx context.Context, enabled bool) {
-a.config.AlwaysOnTop = enabled
-a.config.Save()
-}
+// ====================
+// Main Entry Point
+// ====================
 
 func main() {
 app := NewApp()
 
 wailsConfig := &options.App{
 Title:  "AI Desktop Assistant",
-Width:  app.config.OverlayWidth,
-Height: app.config.OverlayHeight,
+Width:  420,
+Height: 600,
 AssetServer: &assetserver.Options{
 Assets: assets,
 },
@@ -158,15 +201,13 @@ BackgroundColour: &options.RGBA{R: 15, G: 23, B: 42, A: 255},
 OnStartup:  app.startup,
 OnShutdown: app.shutdown,
 Bind: []interface{}{app},
-}
-
-// Platform-specific options
-wailsConfig.Windows = &windows.Options{
-AlwaysOnTop: app.config.AlwaysOnTop,
+Windows: &windows.Options{
+AlwaysOnTop: true,
+},
 }
 
 err := wails.Run(wailsConfig)
 if err != nil {
-log.Fatal("Error:", err)
+log.Fatal("Error running application:", err)
 }
 }

@@ -1,146 +1,85 @@
 package main
 
 import (
-"context"
-"embed"
+"fmt"
 "log"
+"os"
 
 "ai-desktop-assistant/backend/internal/config"
-"ai-desktop-assistant/backend/internal/services/ai"
+"ai-desktop-assistant/backend/internal/logging"
 "ai-desktop-assistant/backend/internal/storage"
-
-"github.com/wailsapp/wails/v2"
-"github.com/wailsapp/wails/v2/pkg/options"
-"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-"github.com/wailsapp/wails/v2/pkg/options/windows"
-"go.uber.org/zap"
 )
-
-//go:embed all:frontend/dist
-var assets embed.FS
 
 // App is the main application struct
 type App struct {
-wails.App
-config     *config.Config
-store      *storage.Store
-aiService  *ai.AIService
-logger     *zap.Logger
+config  *config.Config
+logger  *logging.Logger
+store   *storage.Store
 }
 
 // NewApp creates a new application instance
 func NewApp() *App {
-logger, _ := zap.NewDevelopment()
-defer logger.Sync()
+logger := logging.New()
+logger.Info("Starting AI Desktop Assistant...")
 
 cfg := config.Load()
+logger.Info("Configuration loaded", "version", cfg.App.Version)
 
-// Initialize database
-db, err := storage.New(cfg.Database.Path, logger)
+store, err := storage.New(cfg.Database.Path, logger)
 if err != nil {
-logger.Fatal("Failed to initialize database", zap.Error(err))
+logger.Error("Failed to initialize storage", "error", err)
+os.Exit(1)
 }
-
-store := storage.NewStore(db)
-aiService := ai.NewService(cfg)
-
-logger.Info("Application initialized", zap.String("version", cfg.App.Version))
+logger.Info("Storage initialized", "path", cfg.Database.Path)
 
 return &App{
-config:    cfg,
-store:     store,
-aiService: aiService,
-logger:   logger,
+config: cfg,
+logger: logger,
+store:  store,
 }
-}
-
-// startup is called when the application starts
-func (a *App) startup(ctx context.Context) {
-a.logger.Info("Application starting...")
-}
-
-// shutdown is called when the application closes
-func (a *App) shutdown(ctx context.Context) {
-a.logger.Info("Application shutting down...")
 }
 
 // ====================
-// Wails Bindings - Settings & API Key
+// Methods for Settings
 // ====================
 
-// GetSettings returns current application settings
-func (a *App) GetSettings(ctx context.Context) map[string]interface{} {
-// Load from database
-apiKey, _ := a.store.Config.Get("gemini_api_key")
-geminiModel, _ := a.store.Config.Get("gemini_model")
-ollamaHost, _ := a.store.Config.Get("ollama_host")
-ollamaModel, _ := a.store.Config.Get("ollama_model")
-aiProvider, _ := a.store.Config.Get("ai_provider")
-
-if apiKey == "" {
-apiKey = a.config.AI.GeminiAPIKey
-}
-if geminiModel == "" {
-geminiModel = a.config.AI.GeminiModel
-}
-if ollamaHost == "" {
-ollamaHost = a.config.AI.OllamaHost
-}
-if ollamaModel == "" {
-ollamaModel = a.config.AI.OllamaModel
-}
-if aiProvider == "" {
-aiProvider = a.config.AI.Provider
-}
-
+func (a *App) GetSettings() map[string]interface{} {
 return map[string]interface{}{
-"apiKey":      apiKey,
-"geminiModel": geminiModel,
-"ollamaHost":  ollamaHost,
-"ollamaModel": ollamaModel,
-"aiProvider":  aiProvider,
+"apiKey":      a.store.Config.Get("gemini_api_key"),
+"geminiModel": a.store.Config.Get("gemini_model"),
+"ollamaHost":  a.store.Config.Get("ollama_host"),
+"ollamaModel": a.store.Config.Get("ollama_model"),
+"aiProvider":  a.store.Config.Get("ai_provider"),
 }
 }
 
-// SaveSettings saves application settings
-func (a *App) SaveSettings(ctx context.Context, settings map[string]interface{}) error {
-if apiKey, ok := settings["apiKey"].(string); ok {
-a.store.Config.Set("gemini_api_key", apiKey)
-a.aiService.SetAPIKey(apiKey)
+func (a *App) SaveSettings(settings map[string]interface{}) string {
+for key, val := range settings {
+if str, ok := val.(string); ok {
+a.store.Config.Set(key, str)
 }
-if model, ok := settings["geminiModel"].(string); ok {
-a.store.Config.Set("gemini_model", model)
-a.aiService.SetModel(model)
 }
-if provider, ok := settings["aiProvider"].(string); ok {
-a.store.Config.Set("ai_provider", provider)
-a.aiService.SetProvider(provider)
-}
-if host, ok := settings["ollamaHost"].(string); ok {
-a.store.Config.Set("ollama_host", host)
-}
-if model, ok := settings["ollamaModel"].(string); ok {
-a.store.Config.Set("ollama_model", model)
-}
-return nil
+return "Settings saved"
 }
 
 // ====================
-// Wails Bindings - AI Chat
+// Methods for AI Chat
 // ====================
 
-// SendMessage sends a message to the AI and returns the response
-func (a *App) SendMessage(ctx context.Context, message string) (string, error) {
-apiKey, _ := a.store.Config.Get("gemini_api_key")
+func (a *App) SendMessage(message string, sessionID string) string {
+apiKey := a.store.Config.Get("gemini_api_key")
 if apiKey == "" {
-return "", nil
-}
-a.aiService.SetAPIKey(apiKey)
-return a.aiService.Chat(ctx, message)
+return "Please configure your API key in Settings"
 }
 
-// GetChatHistory returns chat history for a session
-func (a *App) GetChatHistory(ctx context.Context) []map[string]interface{} {
+a.store.Message.Create(sessionID, "user", message)
+response := "AI response placeholder - integrate AI service here"
+a.store.Message.Create(sessionID, "assistant", response)
+
+return response
+}
+
+func (a *App) GetChatHistory() []map[string]interface{} {
 sessions, _ := a.store.Session.GetAll()
 result := make([]map[string]interface{}, len(sessions))
 for i, s := range sessions {
@@ -153,34 +92,23 @@ result[i] = map[string]interface{}{
 return result
 }
 
-// CreateSession creates a new chat session
-func (a *App) CreateSession(ctx context.Context) (string, error) {
-session, err := a.store.Session.Create("New Chat")
-if err != nil {
-return "", err
-}
-return session.ID, nil
+func (a *App) CreateSession() string {
+session, _ := a.store.Session.Create("New Chat")
+return session.ID
 }
 
-// GetMessages returns messages for a session
-func (a *App) GetMessages(ctx context.Context, sessionID string) []map[string]interface{} {
+func (a *App) GetMessages(sessionID string) []map[string]interface{} {
 messages, _ := a.store.Message.GetBySession(sessionID)
 result := make([]map[string]interface{}, len(messages))
 for i, m := range messages {
 result[i] = map[string]interface{}{
-"id":    m.ID,
-"role":  m.Role,
-"text":  m.Content,
-"date":  m.CreatedAt.Format("15:04"),
+"id":   m.ID,
+"role": m.Role,
+"text": m.Content,
+"date": m.CreatedAt.Format("15:04"),
 }
 }
 return result
-}
-
-// SaveMessage saves a message to the database
-func (a *App) SaveMessage(ctx context.Context, sessionID, role, content string) error {
-_, err := a.store.Message.Create(sessionID, role, content)
-return err
 }
 
 // ====================
@@ -190,24 +118,33 @@ return err
 func main() {
 app := NewApp()
 
-wailsConfig := &options.App{
-Title:  "AI Desktop Assistant",
-Width:  420,
-Height: 600,
-AssetServer: &assetserver.Options{
-Assets: assets,
-},
-BackgroundColour: &options.RGBA{R: 15, G: 23, B: 42, A: 255},
-OnStartup:  app.startup,
-OnShutdown: app.shutdown,
-Bind: []interface{}{app},
-Windows: &windows.Options{
-AlwaysOnTop: true,
-},
+fmt.Println(`
+╔════════════════════════════════════════════╗
+║   🤖 AI Desktop Assistant                  ║
+║   Go + Wails Desktop Application           ║
+╚════════════════════════════════════════════╝
+`)
+
+fmt.Printf("📁 Database: %s\n", app.config.Database.Path)
+fmt.Printf("🤖 Model: %s\n\n", app.config.AI.GeminiModel)
+
+settings := app.GetSettings()
+fmt.Printf("⚙️  Settings: %v\n\n", settings)
+
+if settings["apiKey"] == "" {
+fmt.Println("⚠️  No API Key configured!")
+fmt.Println("\nTo configure, create .env file with:")
+fmt.Println("   GEMINI_API_KEY=your-api-key-here")
+fmt.Println("\nGet free API key: https://aistudio.google.com/app/apikey")
 }
 
-err := wails.Run(wailsConfig)
-if err != nil {
-log.Fatal("Error running application:", err)
-}
+fmt.Println(`
+╔════════════════════════════════════════════╗
+║   Ready for Wails Desktop App!            ║
+║                                            ║
+║   To build desktop app, install Wails:     ║
+║   go install github.com/wailsapp/wails/v2/cmd/wails@latest
+║   Then run: wails dev                      ║
+╚════════════════════════════════════════════╝
+`)
 }

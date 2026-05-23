@@ -2,13 +2,12 @@ package storage
 
 import (
 "database/sql"
-"fmt"
 "time"
 
 "github.com/google/uuid"
 )
 
-// ConfigRepository handles configuration data
+// ConfigRepository handles key-value configuration
 type ConfigRepository struct {
 db *Database
 }
@@ -17,39 +16,17 @@ func NewConfigRepository(db *Database) *ConfigRepository {
 return &ConfigRepository{db: db}
 }
 
-func (r *ConfigRepository) Get(key string) (string, error) {
+func (r *ConfigRepository) Get(key string) string {
 var value string
-err := r.db.GetDB().QueryRow("SELECT value FROM config WHERE key = ?", key).Scan(&value)
-if err == sql.ErrNoRows {
-return "", nil
-}
-return value, err
+r.db.GetDB().QueryRow("SELECT value FROM config WHERE key = ?", key).Scan(&value)
+return value
 }
 
-func (r *ConfigRepository) Set(key, value string) error {
-_, err := r.db.GetDB().Exec(`
+func (r *ConfigRepository) Set(key, value string) {
+r.db.GetDB().Exec(`
 INSERT INTO config (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
 `, key, value, value)
-return err
-}
-
-func (r *ConfigRepository) GetAll() (map[string]string, error) {
-rows, err := r.db.GetDB().Query("SELECT key, value FROM config")
-if err != nil {
-return nil, err
-}
-defer rows.Close()
-
-result := make(map[string]string)
-for rows.Next() {
-var key, value string
-if err := rows.Scan(&key, &value); err != nil {
-return nil, err
-}
-result[key] = value
-}
-return result, rows.Err()
 }
 
 // SessionRepository handles chat sessions
@@ -58,10 +35,10 @@ db *Database
 }
 
 type Session struct {
-ID        string    `json:"id"`
-Title     string    `json:"title"`
-CreatedAt time.Time `json:"created_at"`
-UpdatedAt time.Time `json:"updated_at"`
+ID        string
+Title     string
+CreatedAt time.Time
+UpdatedAt time.Time
 }
 
 func NewSessionRepository(db *Database) *SessionRepository {
@@ -84,15 +61,15 @@ return session, err
 }
 
 func (r *SessionRepository) Get(id string) (*Session, error) {
-var session Session
+var s Session
 err := r.db.GetDB().QueryRow(`
 SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?
-`, id).Scan(&session.ID, &session.Title, &session.CreatedAt, &session.UpdatedAt)
+`, id).Scan(&s.ID, &s.Title, &s.CreatedAt, &s.UpdatedAt)
 
 if err != nil {
 return nil, err
 }
-return &session, nil
+return &s, nil
 }
 
 func (r *SessionRepository) GetAll() ([]Session, error) {
@@ -115,13 +92,6 @@ sessions = append(sessions, s)
 return sessions, rows.Err()
 }
 
-func (r *SessionRepository) UpdateTitle(id, title string) error {
-_, err := r.db.GetDB().Exec(`
-UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-`, title, id)
-return err
-}
-
 func (r *SessionRepository) Delete(id string) error {
 _, err := r.db.GetDB().Exec("DELETE FROM sessions WHERE id = ?", id)
 return err
@@ -133,11 +103,11 @@ db *Database
 }
 
 type Message struct {
-ID        string    `json:"id"`
-SessionID string    `json:"session_id"`
-Role      string    `json:"role"`
-Content   string    `json:"content"`
-CreatedAt time.Time `json:"created_at"`
+ID        string
+SessionID string
+Role      string
+Content   string
+CreatedAt time.Time
 }
 
 func NewMessageRepository(db *Database) *MessageRepository {
@@ -157,15 +127,12 @@ _, err := r.db.GetDB().Exec(`
 INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)
 `, msg.ID, msg.SessionID, msg.Role, msg.Content, msg.CreatedAt)
 
-// Update session updated_at
-r.db.GetDB().Exec("UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", sessionID)
-
 return msg, err
 }
 
 func (r *MessageRepository) GetBySession(sessionID string) ([]Message, error) {
 rows, err := r.db.GetDB().Query(`
-SELECT id, session_id, role, content, created_at FROM messages 
+SELECT id, session_id, role, content, created_at FROM messages
 WHERE session_id = ? ORDER BY created_at ASC
 `, sessionID)
 if err != nil {
@@ -185,28 +152,23 @@ return messages, rows.Err()
 }
 
 func (r *MessageRepository) GetLast(sessionID string) (*Message, error) {
-var msg Message
+var m Message
 err := r.db.GetDB().QueryRow(`
-SELECT id, session_id, role, content, created_at FROM messages 
+SELECT id, session_id, role, content, created_at FROM messages
 WHERE session_id = ? ORDER BY created_at DESC LIMIT 1
-`, sessionID).Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &msg.CreatedAt)
+`, sessionID).Scan(&m.ID, &m.SessionID, &m.Role, &m.Content, &m.CreatedAt)
 
-if err != nil {
-return nil, err
+if err == sql.ErrNoRows {
+return nil, nil
 }
-return &msg, nil
-}
-
-func (r *MessageRepository) Delete(id string) error {
-_, err := r.db.GetDB().Exec("DELETE FROM messages WHERE id = ?", id)
-return err
+return &m, err
 }
 
-// Store facade for all repositories
+// Store is the facade for all repositories
 type Store struct {
-Config   *ConfigRepository
-Session  *SessionRepository
-Message  *MessageRepository
+Config  *ConfigRepository
+Session *SessionRepository
+Message *MessageRepository
 }
 
 func NewStore(db *Database) *Store {
@@ -215,8 +177,4 @@ Config:  NewConfigRepository(db),
 Session: NewSessionRepository(db),
 Message: NewMessageRepository(db),
 }
-}
-
-func (s *Store) Health() error {
-return s.Config.db.Health()
 }

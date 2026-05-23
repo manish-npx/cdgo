@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS transcriptions (
+    id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    language TEXT NOT NULL DEFAULT 'en',
+    duration INTEGER NOT NULL DEFAULT 0,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+);

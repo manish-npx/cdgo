@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS screenshots (
+    id TEXT PRIMARY KEY,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    path TEXT NOT NULL
+);

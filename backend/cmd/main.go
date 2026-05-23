@@ -11,7 +11,10 @@ import (
 _ "github.com/mattn/go-sqlite3"
 )
 
-// ConfigRepository handles key-value config
+// ====================
+// Config Repository
+// ====================
+
 type ConfigRepository struct {
 db *sql.DB
 }
@@ -33,16 +36,19 @@ ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
 `, key, value, value)
 }
 
-// SessionRepository handles chat sessions
-type SessionRepository struct {
-db *sql.DB
-}
+// ====================
+// Session Repository
+// ====================
 
 type Session struct {
 ID        string
 Title     string
 CreatedAt time.Time
 UpdatedAt time.Time
+}
+
+type SessionRepository struct {
+db *sql.DB
 }
 
 func NewSessionRepository(db *sql.DB) *SessionRepository {
@@ -82,10 +88,25 @@ sessions = append(sessions, s)
 return sessions, rows.Err()
 }
 
-// MessageRepository handles chat messages
-type MessageRepository struct {
-db *sql.DB
+func (r *SessionRepository) Get(id string) (*Session, error) {
+var s Session
+err := r.db.QueryRow(`
+SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?
+`, id).Scan(&s.ID, &s.Title, &s.CreatedAt, &s.UpdatedAt)
+if err != nil {
+return nil, err
 }
+return &s, nil
+}
+
+func (r *SessionRepository) Delete(id string) error {
+_, err := r.db.Exec("DELETE FROM sessions WHERE id = ?", id)
+return err
+}
+
+// ====================
+// Message Repository
+// ====================
 
 type Message struct {
 ID        string
@@ -93,6 +114,10 @@ SessionID string
 Role      string
 Content   string
 CreatedAt time.Time
+}
+
+type MessageRepository struct {
+db *sql.DB
 }
 
 func NewMessageRepository(db *sql.DB) *MessageRepository {
@@ -134,7 +159,10 @@ messages = append(messages, m)
 return messages, rows.Err()
 }
 
-// Store facade
+// ====================
+// Store Facade
+// ====================
+
 type Store struct {
 Config  *ConfigRepository
 Session *SessionRepository
@@ -149,8 +177,11 @@ Message: NewMessageRepository(db),
 }
 }
 
-// Database
-func initDB(dbPath string) (*sql.DB, error) {
+// ====================
+// Database Init
+// ====================
+
+func InitDB(dbPath string) (*sql.DB, error) {
 dir := filepath.Dir(dbPath)
 os.MkdirAll(dir, 0755)
 
@@ -189,11 +220,13 @@ return nil, err
 }
 }
 
-fmt.Println("✅ Database initialized at:", dbPath)
 return db, nil
 }
 
+// ====================
 // App
+// ====================
+
 type App struct {
 store *Store
 }
@@ -202,7 +235,7 @@ func NewApp() *App {
 home, _ := os.UserHomeDir()
 dbPath := filepath.Join(home, ".ai-desktop-assistant", "app.db")
 
-db, err := initDB(dbPath)
+db, err := InitDB(dbPath)
 if err != nil {
 fmt.Println("❌ Database error:", err)
 os.Exit(1)
@@ -235,7 +268,7 @@ return "⚠️ Please configure your API key in Settings!"
 }
 
 a.store.Message.Create(sessionID, "user", message)
-a.store.Message.Create(sessionID, "assistant", "AI response - integrate AI service here")
+a.store.Message.Create(sessionID, "assistant", "AI response placeholder - integrate AI service here")
 
 return "Response from AI (placeholder)"
 }
@@ -258,6 +291,24 @@ result[i] = map[string]interface{}{
 return result
 }
 
+func (a *App) GetMessages(sessionID string) []map[string]interface{} {
+messages, _ := a.store.Message.GetBySession(sessionID)
+result := make([]map[string]interface{}, len(messages))
+for i, m := range messages {
+result[i] = map[string]interface{}{
+"id":   m.ID,
+"role": m.Role,
+"text": m.Content,
+"date": m.CreatedAt.Format("15:04"),
+}
+}
+return result
+}
+
+// ====================
+// Main
+// ====================
+
 func main() {
 app := NewApp()
 
@@ -268,18 +319,20 @@ fmt.Println(`
 ╚════════════════════════════════════════════╝
 `)
 
+fmt.Println("✅ Database initialized!")
+
 settings := app.GetSettings()
-fmt.Printf("⚙️  Settings: %v\n\n", settings)
+fmt.Printf("\n⚙️  Settings: %v\n", settings)
 
 if settings["apiKey"] == "" {
-fmt.Println("⚠️  No API Key configured!")
+fmt.Println("\n⚠️  No API Key configured!")
 fmt.Println("\nTo configure, create .env file:")
 fmt.Println("   GEMINI_API_KEY=your-api-key-here")
 fmt.Println("\nGet free key: https://aistudio.google.com/app/apikey")
 } else {
-fmt.Println("✅ API Key configured!")
+fmt.Println("\n✅ API Key configured!")
 
-// Demo chat
+// Demo
 sessionID := app.CreateSession()
 fmt.Println("\n💬 Demo: Creating session...", sessionID)
 
@@ -287,5 +340,6 @@ response := app.SendMessage("Hello!", sessionID)
 fmt.Println("📝 AI:", response)
 }
 
-fmt.Println("\n📁 Data stored at: ~/.ai-desktop-assistant/app.db")
+home, _ := os.UserHomeDir()
+fmt.Println("\n📁 Data stored at:", filepath.Join(home, ".ai-desktop-assistant"))
 }

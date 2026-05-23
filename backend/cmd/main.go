@@ -1,54 +1,253 @@
 package main
 
 import (
+"database/sql"
 "fmt"
-"log"
 "os"
+"path/filepath"
+"time"
 
-"ai-desktop-assistant/backend/internal/config"
-"ai-desktop-assistant/backend/internal/logging"
-"ai-desktop-assistant/backend/internal/storage"
+"github.com/google/uuid"
+_ "github.com/mattn/go-sqlite3"
 )
 
-// App is the main application struct
-type App struct {
-config  *config.Config
-logger  *logging.Logger
-store   *storage.Store
+// ====================
+// Config Repository
+// ====================
+
+type ConfigRepository struct {
+db *sql.DB
 }
 
-// NewApp creates a new application instance
-func NewApp() *App {
-logger := logging.New()
-logger.Info("Starting AI Desktop Assistant...")
+func NewConfigRepository(db *sql.DB) *ConfigRepository {
+return &ConfigRepository{db: db}
+}
 
-cfg := config.Load()
-logger.Info("Configuration loaded", "version", cfg.App.Version)
+func (r *ConfigRepository) Get(key string) string {
+var value string
+r.db.QueryRow("SELECT value FROM config WHERE key = ?", key).Scan(&value)
+return value
+}
 
-store, err := storage.New(cfg.Database.Path, logger)
+func (r *ConfigRepository) Set(key, value string) {
+r.db.Exec(`
+INSERT INTO config (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
+`, key, value, value)
+}
+
+// ====================
+// Session Repository
+// ====================
+
+type Session struct {
+ID        string
+Title     string
+CreatedAt time.Time
+UpdatedAt time.Time
+}
+
+type SessionRepository struct {
+db *sql.DB
+}
+
+func NewSessionRepository(db *sql.DB) *SessionRepository {
+return &SessionRepository{db: db}
+}
+
+func (r *SessionRepository) Create(title string) (*Session, error) {
+session := &Session{
+ID:        uuid.New().String(),
+Title:     title,
+CreatedAt: time.Now(),
+UpdatedAt: time.Now(),
+}
+_, err := r.db.Exec(`
+INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)
+`, session.ID, session.Title, session.CreatedAt, session.UpdatedAt)
+return session, err
+}
+
+func (r *SessionRepository) GetAll() ([]Session, error) {
+rows, err := r.db.Query(`
+SELECT id, title, created_at, updated_at FROM sessions ORDER BY updated_at DESC
+`)
 if err != nil {
-logger.Error("Failed to initialize storage", "error", err)
+return nil, err
+}
+defer rows.Close()
+
+var sessions []Session
+for rows.Next() {
+var s Session
+if err := rows.Scan(&s.ID, &s.Title, &s.CreatedAt, &s.UpdatedAt); err != nil {
+return nil, err
+}
+sessions = append(sessions, s)
+}
+return sessions, rows.Err()
+}
+
+func (r *SessionRepository) Get(id string) (*Session, error) {
+var s Session
+err := r.db.QueryRow(`
+SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?
+`, id).Scan(&s.ID, &s.Title, &s.CreatedAt, &s.UpdatedAt)
+if err != nil {
+return nil, err
+}
+return &s, nil
+}
+
+func (r *SessionRepository) Delete(id string) error {
+_, err := r.db.Exec("DELETE FROM sessions WHERE id = ?", id)
+return err
+}
+
+// ====================
+// Message Repository
+// ====================
+
+type Message struct {
+ID        string
+SessionID string
+Role      string
+Content   string
+CreatedAt time.Time
+}
+
+type MessageRepository struct {
+db *sql.DB
+}
+
+func NewMessageRepository(db *sql.DB) *MessageRepository {
+return &MessageRepository{db: db}
+}
+
+func (r *MessageRepository) Create(sessionID, role, content string) (*Message, error) {
+msg := &Message{
+ID:        uuid.New().String(),
+SessionID: sessionID,
+Role:      role,
+Content:   content,
+CreatedAt: time.Now(),
+}
+_, err := r.db.Exec(`
+INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)
+`, msg.ID, msg.SessionID, msg.Role, msg.Content, msg.CreatedAt)
+return msg, err
+}
+
+func (r *MessageRepository) GetBySession(sessionID string) ([]Message, error) {
+rows, err := r.db.Query(`
+SELECT id, session_id, role, content, created_at FROM messages
+WHERE session_id = ? ORDER BY created_at ASC
+`, sessionID)
+if err != nil {
+return nil, err
+}
+defer rows.Close()
+
+var messages []Message
+for rows.Next() {
+var m Message
+if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+return nil, err
+}
+messages = append(messages, m)
+}
+return messages, rows.Err()
+}
+
+// ====================
+// Store Facade
+// ====================
+
+type Store struct {
+Config  *ConfigRepository
+Session *SessionRepository
+Message *MessageRepository
+}
+
+func NewStore(db *sql.DB) *Store {
+return &Store{
+Config:  NewConfigRepository(db),
+Session: NewSessionRepository(db),
+Message: NewMessageRepository(db),
+}
+}
+
+// ====================
+// Database Init
+// ====================
+
+func InitDB(dbPath string) (*sql.DB, error) {
+dir := filepath.Dir(dbPath)
+os.MkdirAll(dir, 0755)
+
+db, err := sql.Open("sqlite3", dbPath+"?_journal=WAL")
+if err != nil {
+return nil, err
+}
+
+// Create tables
+tables := []string{
+`CREATE TABLE IF NOT EXISTS config (
+key TEXT PRIMARY KEY,
+value TEXT NOT NULL,
+updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`,
+`CREATE TABLE IF NOT EXISTS sessions (
+id TEXT PRIMARY KEY,
+title TEXT NOT NULL,
+created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`,
+`CREATE TABLE IF NOT EXISTS messages (
+id TEXT PRIMARY KEY,
+session_id TEXT NOT NULL,
+role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+content TEXT NOT NULL,
+created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+)`,
+`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)`,
+}
+
+for _, table := range tables {
+if _, err := db.Exec(table); err != nil {
+return nil, err
+}
+}
+
+return db, nil
+}
+
+// ====================
+// App
+// ====================
+
+type App struct {
+store *Store
+}
+
+func NewApp() *App {
+home, _ := os.UserHomeDir()
+dbPath := filepath.Join(home, ".ai-desktop-assistant", "app.db")
+
+db, err := InitDB(dbPath)
+if err != nil {
+fmt.Println("❌ Database error:", err)
 os.Exit(1)
 }
-logger.Info("Storage initialized", "path", cfg.Database.Path)
 
-return &App{
-config: cfg,
-logger: logger,
-store:  store,
+return &App{store: NewStore(db)}
 }
-}
-
-// ====================
-// Methods for Settings
-// ====================
 
 func (a *App) GetSettings() map[string]interface{} {
 return map[string]interface{}{
 "apiKey":      a.store.Config.Get("gemini_api_key"),
 "geminiModel": a.store.Config.Get("gemini_model"),
-"ollamaHost":  a.store.Config.Get("ollama_host"),
-"ollamaModel": a.store.Config.Get("ollama_model"),
 "aiProvider":  a.store.Config.Get("ai_provider"),
 }
 }
@@ -59,24 +258,24 @@ if str, ok := val.(string); ok {
 a.store.Config.Set(key, str)
 }
 }
-return "Settings saved"
+return "Settings saved!"
 }
-
-// ====================
-// Methods for AI Chat
-// ====================
 
 func (a *App) SendMessage(message string, sessionID string) string {
 apiKey := a.store.Config.Get("gemini_api_key")
 if apiKey == "" {
-return "Please configure your API key in Settings"
+return "⚠️ Please configure your API key in Settings!"
 }
 
 a.store.Message.Create(sessionID, "user", message)
-response := "AI response placeholder - integrate AI service here"
-a.store.Message.Create(sessionID, "assistant", response)
+a.store.Message.Create(sessionID, "assistant", "AI response placeholder - integrate AI service here")
 
-return response
+return "Response from AI (placeholder)"
+}
+
+func (a *App) CreateSession() string {
+session, _ := a.store.Session.Create("New Chat")
+return session.ID
 }
 
 func (a *App) GetChatHistory() []map[string]interface{} {
@@ -90,11 +289,6 @@ result[i] = map[string]interface{}{
 }
 }
 return result
-}
-
-func (a *App) CreateSession() string {
-session, _ := a.store.Session.Create("New Chat")
-return session.ID
 }
 
 func (a *App) GetMessages(sessionID string) []map[string]interface{} {
@@ -112,7 +306,7 @@ return result
 }
 
 // ====================
-// Main Entry Point
+// Main
 // ====================
 
 func main() {
@@ -121,30 +315,31 @@ app := NewApp()
 fmt.Println(`
 ╔════════════════════════════════════════════╗
 ║   🤖 AI Desktop Assistant                  ║
-║   Go + Wails Desktop Application           ║
+║   Go + SQLite + Gemini                      ║
 ╚════════════════════════════════════════════╝
 `)
 
-fmt.Printf("📁 Database: %s\n", app.config.Database.Path)
-fmt.Printf("🤖 Model: %s\n\n", app.config.AI.GeminiModel)
+fmt.Println("✅ Database initialized!")
 
 settings := app.GetSettings()
-fmt.Printf("⚙️  Settings: %v\n\n", settings)
+fmt.Printf("\n⚙️  Settings: %v\n", settings)
 
 if settings["apiKey"] == "" {
-fmt.Println("⚠️  No API Key configured!")
-fmt.Println("\nTo configure, create .env file with:")
+fmt.Println("\n⚠️  No API Key configured!")
+fmt.Println("\nTo configure, create .env file:")
 fmt.Println("   GEMINI_API_KEY=your-api-key-here")
-fmt.Println("\nGet free API key: https://aistudio.google.com/app/apikey")
+fmt.Println("\nGet free key: https://aistudio.google.com/app/apikey")
+} else {
+fmt.Println("\n✅ API Key configured!")
+
+// Demo
+sessionID := app.CreateSession()
+fmt.Println("\n💬 Demo: Creating session...", sessionID)
+
+response := app.SendMessage("Hello!", sessionID)
+fmt.Println("📝 AI:", response)
 }
 
-fmt.Println(`
-╔════════════════════════════════════════════╗
-║   Ready for Wails Desktop App!            ║
-║                                            ║
-║   To build desktop app, install Wails:     ║
-║   go install github.com/wailsapp/wails/v2/cmd/wails@latest
-║   Then run: wails dev                      ║
-╚════════════════════════════════════════════╝
-`)
+home, _ := os.UserHomeDir()
+fmt.Println("\n📁 Data stored at:", filepath.Join(home, ".ai-desktop-assistant"))
 }
